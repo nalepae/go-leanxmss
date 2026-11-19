@@ -11,6 +11,7 @@ var (
 	errInvalidLength = errors.New("leanxmss: invalid length")         // An encoded public key or signature has the wrong length.
 	errNoCodeword    = errors.New("leanxmss: no admissible encoding") // None of a layer's randomizer trials gives a codeword.
 	errLeafOutside   = errors.New("leanxmss: leaf outside the tree")  // A leaf is not in the tree asked for its path.
+	errLeafBehind    = errors.New("leanxmss: leaf behind the state")  // A compact state is asked to move to an earlier leaf.
 )
 
 // PublicKey is a leanXMSS public key: the root of the top tree and the public
