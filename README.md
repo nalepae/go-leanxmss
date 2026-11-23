@@ -156,12 +156,39 @@ and cannot be disabled.
 
 Safe for concurrent use.
 
-| Function                                                                     | Description                                                                                |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `NewKeyFromSeed(seed [32]byte) *PrivateKey`                                  | Returns the private key of a seed. Builds the top tree.                                    |
-| `(*PrivateKey).PublicKey() PublicKey`                                        | Returns the public key.                                                                    |
-| `(*PrivateKey).Sign(leafIndex uint32, message [32]byte) (*Signature, error)` | Signs a message at a leaf index. Never sign two different messages at the same leaf index. |
-| `(*PrivateKey).Prepare(leafIndex uint32) error`                              | Builds the bottom tree of a leaf index ahead of time.                                      |
+| Function                                                                          | Description                                                                                     |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `NewKeyFromSeed(seed [32]byte) *PrivateKey`                                       | Returns the private key of a seed. Builds the top tree.                                         |
+| `NewKeyFromCache(seed [32]byte, pk PublicKey, cache []byte) (*PrivateKey, error)` | Returns the private key of a seed with its trees loaded from a tree cache checked against `pk`. |
+| `(*PrivateKey).PublicKey() PublicKey`                                             | Returns the public key.                                                                         |
+| `(*PrivateKey).Sign(leafIndex uint32, message [32]byte) (*Signature, error)`      | Signs a message at a leaf index. Never sign two different messages at the same leaf index.      |
+| `(*PrivateKey).Prepare(leafIndex uint32) error`                                   | Builds the bottom tree of a leaf index ahead of time.                                           |
+| `(*PrivateKey).TreeCache() []byte`                                                | Encodes the top tree and the cached bottom trees, in the reference implementation's format.     |
+| `SeedPublicParam(seed [32]byte) [16]byte`                                         | Returns the public parameter of a seed's key, the last 16 bytes of its public key, cheaply.     |
+
+#### Tree cache
+
+`TreeCache` returns, and `NewKeyFromCache` takes, the top tree followed by the
+cached bottom trees, least recently used first: 4,096 bytes plus 5,300 per bottom
+tree. A tree is stored as its 256 nodes of level 8.
+
+```text
+cache       = top tree | bottom tree | bottom tree | ...
+
+top tree    = 256 nodes of level 8, 16 bytes each                4,096 bytes
+
+bottom tree = index, uint32 little endian                            4 bytes
+              randomizer                                            16 bytes
+              chain values, 58 × 16 bytes                          928 bytes
+              path, 16 × 16 bytes                                  256 bytes
+              256 nodes of level 8, 16 bytes each                4,096 bytes
+                                                         total   5,300 bytes
+```
+
+The randomizer, chain values and path are the top layer's signature of the bottom
+tree's root, encoded as in a `Signature`. `NewKeyFromCache` checks every tree
+against `pk`, so a cache that loads gives valid signatures. The cache holds no
+secret.
 
 ### `PublicKey`
 

@@ -69,3 +69,15 @@ func BenchmarkVerify(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkNewKeyFromCache loads a key from a tree cache of its top tree and two
+// bottom trees.
+func BenchmarkNewKeyFromCache(b *testing.B) {
+	seed, pk, cache := devnet0Key(b)
+
+	for b.Loop() {
+		if _, err := NewKeyFromCache(seed, pk, cache); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

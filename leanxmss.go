@@ -69,19 +69,9 @@ func (s *Signature) LeafIndex() uint32 {
 func (s *Signature) Bytes() []byte {
 	out := make([]byte, 0, signatureSize)
 	out = binary.LittleEndian.AppendUint32(out, s.leafIndex)
-	for _, layer := range []*layerSignature{&s.bottom, &s.top} {
-		out = append(out, layer.randomizer[:]...)
+	out = s.bottom.append(out)
 
-		for i := range layer.chainValues {
-			out = append(out, layer.chainValues[i][:]...)
-		}
-
-		for i := range layer.path {
-			out = append(out, layer.path[i][:]...)
-		}
-	}
-
-	return out
+	return s.top.append(out)
 }
 
 // SignatureFromBytes decodes a signature encoded by [Signature.Bytes]. It returns
@@ -138,10 +128,16 @@ func NewKeyFromSeed(seed [32]byte) *PrivateKey {
 	s := k.deriveSchemeSeed(&seed)
 	pp := k.derivePublicParam(&s)
 
+	return newPrivateKey(s, pp, buildLayerTree(&pp, &s, 1, 0))
+}
+
+// newPrivateKey returns the private key of a scheme seed, its public parameter and
+// its top tree, with no bottom tree cached.
+func newPrivateKey(s schemeSeed, pp publicParam, top *layerTree) *PrivateKey {
 	return &PrivateKey{
 		seed:        s,
 		publicParam: pp,
-		top:         buildLayerTree(&pp, &s, 1, 0),
+		top:         top,
 		bottoms:     make([]*bottomTree, 0, maxCachedBottomTrees+1),
 	}
 }
@@ -171,7 +167,7 @@ func (sk *PrivateKey) Sign(leafIndex uint32, message [32]byte) (*Signature, erro
 		return nil, fmt.Errorf("one-time signature at leaf %d: %w", leafIndex, err)
 	}
 
-	path, err := bottom.tree.path(leafIndex)
+	path, err := bottom.tree.path(&sk.publicParam, &sk.seed, leafIndex)
 	if err != nil {
 		return nil, fmt.Errorf("authentication path of leaf %d: %w", leafIndex, err)
 	}
@@ -221,7 +217,7 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		return nil, fmt.Errorf("top one-time signature of bottom tree %d: %w", index, err)
 	}
 
-	topPath, err := sk.top.path(index)
+	topPath, err := sk.top.path(&sk.publicParam, &sk.seed, index)
 	if err != nil {
 		return nil, fmt.Errorf("authentication path of bottom tree %d: %w", index, err)
 	}
@@ -236,12 +232,19 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		},
 	}
 
+	// Another goroutine may have built it meanwhile.
+	return sk.cache(bottom), nil
+}
+
+// cache caches bottom as the most recently used tree, evicting the least recently
+// used one if the cache is full, and returns it. If its tree is already cached, it
+// returns that one instead.
+func (sk *PrivateKey) cache(bottom *bottomTree) *bottomTree {
 	sk.mu.Lock()
 	defer sk.mu.Unlock()
 
-	// Another goroutine may have built it meanwhile.
-	if cached := sk.useCached(index); cached != nil {
-		return cached, nil
+	if cached := sk.useCached(bottom.index); cached != nil {
+		return cached
 	}
 
 	sk.bottoms = append(sk.bottoms, bottom)
@@ -249,7 +252,7 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		sk.bottoms = append(sk.bottoms[:0], sk.bottoms[1:]...)
 	}
 
-	return bottom, nil
+	return bottom
 }
 
 // useCached returns bottom tree index if cached, moved to the most recently used

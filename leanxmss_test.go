@@ -25,14 +25,19 @@ func testMessage() [messageSize]byte {
 	return m
 }
 
-// sharedKey is one full key for the tests that only need some key, generated once.
-var sharedKey = sync.OnceValue(func() *PrivateKey {
+// testSeed returns the seed of sharedKey.
+func testSeed() [seedSize]byte {
 	var seed [seedSize]byte
 	for i := range seed {
 		seed[i] = 1
 	}
 
-	return NewKeyFromSeed(seed)
+	return seed
+}
+
+// sharedKey is one full key for the tests that only need some key, generated once.
+var sharedKey = sync.OnceValue(func() *PrivateKey {
+	return NewKeyFromSeed(testSeed())
 })
 
 // mustSign signs message at leafIndex with sk, and fails the test on an error.
@@ -444,9 +449,9 @@ func TestConcurrentSigning(t *testing.T) {
 // TestPathOutsideTree checks that asking a tree for the path of a leaf it does not
 // hold returns an error instead of panicking.
 func TestPathOutsideTree(t *testing.T) {
-	tree := &layerTree{first: 1 << layerHeight}
+	tree := &layerTree{index: 1}
 	for _, leaf := range []uint32{0, 1<<layerHeight - 1, 2 << layerHeight} {
-		if _, err := tree.path(leaf); !errors.Is(err, errLeafOutside) {
+		if _, err := tree.path(&publicParam{}, &schemeSeed{}, leaf); !errors.Is(err, errLeafOutside) {
 			t.Errorf("path of leaf %d: %v", leaf, err)
 		}
 	}

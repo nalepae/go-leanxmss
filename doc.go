@@ -28,6 +28,19 @@
 // it used last; [PrivateKey.Prepare] builds one
 // ahead of time. Verification costs 186 permutations.
 //
+// A tree keeps its 2^8 nodes of level 8 and the levels above, 8 KiB:
+// a signature recomputes the 2^8 leaves under its leaf's level-8 node, about
+// 52,000 permutations.
+//
+// # Tree cache
+//
+// [PrivateKey.TreeCache] encodes the trees of a key, in the format of the
+// reference implementation's cache_to_bytes: 4,096 bytes, plus 5,300 per cached
+// bottom tree. [NewKeyFromCache] loads them back in well under a millisecond,
+// checked against a trusted public key, instead of building them.
+// [SeedPublicParam] gives the public parameter of a seed's key for two hashes, to
+// find its public key among known ones.
+//
 // Signing is mostly the search for a randomizer, about a million permutations.
 // On arm64 CPUs with the Armv8.2 SHA3 instructions, it permutes two Keccak states
 // at once with them, unless built with the purego tag.
