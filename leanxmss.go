@@ -11,6 +11,7 @@ var (
 	errInvalidLength = errors.New("leanxmss: invalid length")         // An encoded public key or signature has the wrong length.
 	errNoCodeword    = errors.New("leanxmss: no admissible encoding") // None of a layer's randomizer trials gives a codeword.
 	errLeafOutside   = errors.New("leanxmss: leaf outside the tree")  // A leaf is not in the tree asked for its path.
+	errCacheMismatch = errors.New("leanxmss: cache does not match")   // A tree cache does not match the key it is loaded for.
 )
 
 // PublicKey is a leanXMSS public key: the root of the top tree and the public
@@ -43,12 +44,52 @@ func PublicKeyFromBytes(b []byte) (PublicKey, error) {
 	return pk, nil
 }
 
+// PublicParamFromSeed returns the public parameter of the key of a seed, the last
+// 16 bytes of its public key, without building the key: it costs two hashes. It
+// tells which public key is a seed's among known ones, as [NewKeyFromCache] needs.
+func PublicParamFromSeed(seed [32]byte) [16]byte {
+	k := newHasher()
+	s := k.deriveSchemeSeed(&seed)
+
+	return k.derivePublicParam(&s)
+}
+
 // layerSignature is one layer's signature: the randomizer, the chain values and the
 // authentication path.
 type layerSignature struct {
 	randomizer  randomizer
 	chainValues [v]digest
 	path        [layerHeight]digest
+}
+
+// append appends the encoding of s to out: the randomizer, the chain values and
+// the path.
+func (s *layerSignature) append(out []byte) []byte {
+	out = append(out, s.randomizer[:]...)
+	for i := range s.chainValues {
+		out = append(out, s.chainValues[i][:]...)
+	}
+
+	for i := range s.path {
+		out = append(out, s.path[i][:]...)
+	}
+
+	return out
+}
+
+// read decodes s from the front of b, at least layerSignatureSize bytes long, and
+// returns the number of bytes read.
+func (s *layerSignature) read(b []byte) int {
+	at := copy(s.randomizer[:], b)
+	for i := range s.chainValues {
+		at += copy(s.chainValues[i][:], b[at:])
+	}
+
+	for i := range s.path {
+		at += copy(s.path[i][:], b[at:])
+	}
+
+	return at
 }
 
 // Signature is a leanXMSS signature, at one leaf index.
@@ -69,19 +110,9 @@ func (s *Signature) LeafIndex() uint32 {
 func (s *Signature) Bytes() []byte {
 	out := make([]byte, 0, signatureSize)
 	out = binary.LittleEndian.AppendUint32(out, s.leafIndex)
-	for _, layer := range []*layerSignature{&s.bottom, &s.top} {
-		out = append(out, layer.randomizer[:]...)
+	out = s.bottom.append(out)
 
-		for i := range layer.chainValues {
-			out = append(out, layer.chainValues[i][:]...)
-		}
-
-		for i := range layer.path {
-			out = append(out, layer.path[i][:]...)
-		}
-	}
-
-	return out
+	return s.top.append(out)
 }
 
 // SignatureFromBytes decodes a signature encoded by [Signature.Bytes]. It returns
@@ -93,31 +124,19 @@ func SignatureFromBytes(b []byte) (*Signature, error) {
 	}
 
 	s := &Signature{leafIndex: binary.LittleEndian.Uint32(b[:leafIndexSize])}
-	at := leafIndexSize
-	take := func(dst []byte) {
-		at += copy(dst, b[at:at+len(dst)])
-	}
-
-	for _, layer := range []*layerSignature{&s.bottom, &s.top} {
-		take(layer.randomizer[:])
-		for i := range layer.chainValues {
-			take(layer.chainValues[i][:])
-		}
-
-		for i := range layer.path {
-			take(layer.path[i][:])
-		}
-	}
+	at := leafIndexSize + s.bottom.read(b[leafIndexSize:])
+	s.top.read(b[at:])
 
 	return s, nil
 }
 
 // PrivateKey is a leanXMSS private key: its seed, with the top tree and the bottom
-// trees it used last cached to make signing faster. It is safe for concurrent use.
+// trees it used last cached to make signing faster. It stores one level of each
+// tree and recomputes the rest per path. It is safe for concurrent use.
 type PrivateKey struct {
-	seed        schemeSeed
-	publicParam publicParam
-	top         *layerTree
+	seed      schemeSeed
+	publicKey PublicKey
+	top       *layerTree
 
 	mu      sync.Mutex
 	bottoms []*bottomTree // holds the bottom trees the key used last, least recently used first.
@@ -138,17 +157,83 @@ func NewKeyFromSeed(seed [32]byte) *PrivateKey {
 	s := k.deriveSchemeSeed(&seed)
 	pp := k.derivePublicParam(&s)
 
+	return newPrivateKey(s, pp, buildLayerTree(&pp, &s, 1, 0))
+}
+
+func newPrivateKey(seed schemeSeed, pp publicParam, top *layerTree) *PrivateKey {
 	return &PrivateKey{
-		seed:        s,
-		publicParam: pp,
-		top:         buildLayerTree(&pp, &s, 1, 0),
-		bottoms:     make([]*bottomTree, 0, maxCachedBottomTrees+1),
+		seed:      seed,
+		publicKey: PublicKey{root: top.root(&pp), publicParam: pp},
+		top:       top,
+		bottoms:   make([]*bottomTree, 0, maxCachedBottomTrees+1),
 	}
+}
+
+// NewKeyFromCache returns the private key of a seed, from its public key and the
+// tree cache [PrivateKey.CacheBytes] returns, without building the top tree or
+// the cached bottom trees. It returns an error if the length of cache is wrong
+// or if cache does not match the key.
+//
+// Each tree's stored level is checked: the top tree's must hash to the public
+// key's root, and each bottom tree's to a root its top-layer signature signs under
+// the public key. The levels below are recomputed from the seed, so a loaded key
+// signs as a built one.
+func NewKeyFromCache(seed [32]byte, publicKey PublicKey, cache []byte) (*PrivateKey, error) {
+	if len(cache) < cachedTreeSize || (len(cache)-cachedTreeSize)%cachedBottomSize != 0 {
+		return nil, fmt.Errorf("%w: tree cache of %d bytes, want %d and a multiple of %d", errInvalidLength, len(cache), cachedTreeSize, cachedBottomSize)
+	}
+
+	k := newHasher()
+	s := k.deriveSchemeSeed(&seed)
+	pp := k.derivePublicParam(&s)
+	sk := newPrivateKey(s, pp, layerTreeFromBytes(1, 0, cache[:cachedTreeSize]))
+	if sk.publicKey != publicKey {
+		return nil, fmt.Errorf("%w: the top tree is not the public key's", errCacheMismatch)
+	}
+
+	for rest := cache[cachedTreeSize:]; len(rest) > 0; rest = rest[cachedBottomSize:] {
+		index := binary.LittleEndian.Uint32(rest[:leafIndexSize])
+		if index>>layerHeight != 0 {
+			return nil, fmt.Errorf("%w: bottom tree %d outside the key", errCacheMismatch, index)
+		}
+
+		bottom := &bottomTree{index: index}
+		at := leafIndexSize + bottom.topSignature.read(rest[leafIndexSize:])
+		bottom.tree = layerTreeFromBytes(0, index, rest[at:cachedBottomSize])
+		bottomRoot := bottom.tree.root(&pp)
+		root, ok := k.layerRoot(&pp, 1, index, bottomRoot[:], &bottom.topSignature)
+		if !ok || root != publicKey.root {
+			return nil, fmt.Errorf("%w: bottom tree %d is not signed under the public key", errCacheMismatch, index)
+		}
+
+		sk.cache(bottom)
+	}
+
+	return sk, nil
+}
+
+// CacheBytes returns the tree cache of sk, which holds no secret: the stored
+// level of the top tree, 4,096 bytes, then for each cached bottom tree, least
+// recently used first, 5,300 bytes: its index, little endian, the top layer's
+// signature of its root and its stored level. [NewKeyFromCache] loads it.
+func (sk *PrivateKey) CacheBytes() []byte {
+	sk.mu.Lock()
+	defer sk.mu.Unlock()
+
+	out := make([]byte, 0, cachedTreeSize+len(sk.bottoms)*cachedBottomSize)
+	out = sk.top.appendNodes(out)
+	for _, b := range sk.bottoms {
+		out = binary.LittleEndian.AppendUint32(out, b.index)
+		out = b.topSignature.append(out)
+		out = b.tree.appendNodes(out)
+	}
+
+	return out
 }
 
 // PublicKey returns the public key of sk.
 func (sk *PrivateKey) PublicKey() PublicKey {
-	return PublicKey{root: sk.top.root(), publicParam: sk.publicParam}
+	return sk.publicKey
 }
 
 // Sign returns the signature of message at leafIndex.
@@ -166,12 +251,13 @@ func (sk *PrivateKey) Sign(leafIndex uint32, message [32]byte) (*Signature, erro
 		return nil, fmt.Errorf("bottom tree of leaf %d: %w", leafIndex, err)
 	}
 
-	r, values, err := wotsSign(&sk.publicParam, &sk.seed, 0, leafIndex, message[:])
+	pp := &sk.publicKey.publicParam
+	r, values, err := wotsSign(pp, &sk.seed, 0, leafIndex, message[:])
 	if err != nil {
 		return nil, fmt.Errorf("one-time signature at leaf %d: %w", leafIndex, err)
 	}
 
-	path, err := bottom.tree.path(leafIndex)
+	path, err := bottom.tree.path(pp, &sk.seed, leafIndex)
 	if err != nil {
 		return nil, fmt.Errorf("authentication path of leaf %d: %w", leafIndex, err)
 	}
@@ -188,7 +274,7 @@ func (sk *PrivateKey) Sign(leafIndex uint32, message [32]byte) (*Signature, erro
 }
 
 // Prepare makes later signing at leafIndex faster, by building and caching the
-// bottom tree leafIndex is in. The cache holds 8 trees. It returns an error in the
+// bottom tree leafIndex is in. The cache holds 4 trees. It returns an error in the
 // same never expected case as [PrivateKey.Sign].
 func (sk *PrivateKey) Prepare(leafIndex uint32) error {
 	if _, err := sk.bottomTree(leafIndex); err != nil {
@@ -214,14 +300,15 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		return cached, nil
 	}
 
-	tree := buildLayerTree(&sk.publicParam, &sk.seed, 0, index)
-	root := tree.root()
-	r, values, err := wotsSign(&sk.publicParam, &sk.seed, 1, index, root[:])
+	pp := &sk.publicKey.publicParam
+	tree := buildLayerTree(pp, &sk.seed, 0, index)
+	root := tree.root(pp)
+	r, values, err := wotsSign(pp, &sk.seed, 1, index, root[:])
 	if err != nil {
 		return nil, fmt.Errorf("top one-time signature of bottom tree %d: %w", index, err)
 	}
 
-	topPath, err := sk.top.path(index)
+	topPath, err := sk.top.path(pp, &sk.seed, index)
 	if err != nil {
 		return nil, fmt.Errorf("authentication path of bottom tree %d: %w", index, err)
 	}
@@ -236,12 +323,16 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		},
 	}
 
+	return sk.cache(bottom), nil
+}
+
+// cache caches bottom, or returns the one another goroutine cached first.
+func (sk *PrivateKey) cache(bottom *bottomTree) *bottomTree {
 	sk.mu.Lock()
 	defer sk.mu.Unlock()
 
-	// Another goroutine may have built it meanwhile.
-	if cached := sk.useCached(index); cached != nil {
-		return cached, nil
+	if cached := sk.useCached(bottom.index); cached != nil {
+		return cached
 	}
 
 	sk.bottoms = append(sk.bottoms, bottom)
@@ -249,7 +340,7 @@ func (sk *PrivateKey) bottomTree(leafIndex uint32) (*bottomTree, error) {
 		sk.bottoms = append(sk.bottoms[:0], sk.bottoms[1:]...)
 	}
 
-	return bottom, nil
+	return bottom
 }
 
 // useCached returns bottom tree index if cached, moved to the most recently used

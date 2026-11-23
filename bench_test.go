@@ -21,6 +21,18 @@ func BenchmarkNewKeyFromSeed(b *testing.B) {
 	}
 }
 
+// BenchmarkNewKeyFromCache loads a key from the tree cache of its top tree and
+// two bottom trees.
+func BenchmarkNewKeyFromCache(b *testing.B) {
+	seed, pk, cache := cachedKeys[0].load(b)
+
+	for b.Loop() {
+		if _, err := NewKeyFromCache(seed, pk, cache); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkSignCachedTree signs in a bottom tree already built. The randomizer
 // search, most of the cost, takes a number of trials that depends on the leaf
 // index, so it cycles through the same signedLeaves leaf indices: run it with

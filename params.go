@@ -24,7 +24,10 @@ const (
 	publicKeySize        = n + publicParamLen                   // Size of an encoded public key, in bytes: the root of the top tree, then the public parameter.
 	signatureSize        = leafIndexSize + 2*layerSignatureSize // Size of an encoded signature, in bytes: the leaf index, then the bottom layer's signature, then the top layer's.
 	logLifetime          = 2 * layerHeight                      // Base-2 logarithm of the number of leaf indices of a key.
-	maxCachedBottomTrees = 8                                    // How many recently used bottom trees a [PrivateKey] caches.
+	maxCachedBottomTrees = 4                                    // How many recently used bottom trees a [PrivateKey] caches.
+
+	cachedTreeSize   = cachedNodes * n                                     // Size of a tree's stored level, in bytes.
+	cachedBottomSize = leafIndexSize + layerSignatureSize + cachedTreeSize // Size of a cached bottom tree, in bytes: its index, the top layer's signature of its root, then its stored level.
 )
 
 // Hash types, the low five bits of an address's byte 7.
@@ -47,6 +50,8 @@ var (
 	_ = [1]int{}[publicKeySize-32]
 	_ = [1]int{}[layerSignatureSize-1200]
 	_ = [1]int{}[signatureSize-2404]
+	_ = [1]int{}[cachedTreeSize-4096]
+	_ = [1]int{}[cachedBottomSize-5300]
 	_ = [1]int{}[logLifetime-8*leafIndexSize]
 	_ = [1]int{}[v%2] // the chain starts come in pairs
 )

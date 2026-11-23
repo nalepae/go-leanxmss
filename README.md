@@ -84,10 +84,18 @@ Each of the top tree's 65,536 leaves signs the root of one bottom tree, and each
 bottom tree's 65,536 leaves sign messages, so a key has 2^32 leaf indices.
 
 `NewKeyFromSeed` builds the top tree. Signing at a leaf index needs the bottom
-tree that index is in: a `PrivateKey` caches the 8 bottom trees it used last, so
+tree that index is in: a `PrivateKey` caches the 4 bottom trees it used last, so
 signing at consecutive leaf indices builds a tree only once every 65,536
 signatures, and `Prepare` builds the next one ahead of time. Key generation, tree
 building and signing use all CPUs.
+
+A key stores the 256 nodes of one level of each tree, 4 KiB per tree, and
+recomputes the 256 leaves under one of them for each signature's path. These
+nodes hold no secret. `CacheBytes` encodes them, in the format of the reference
+implementation's `cache_to_bytes`: the top tree's nodes, 4,096 bytes, then 5,300
+bytes per cached bottom tree, its index, the top layer's signature of its root and
+its nodes. `NewKeyFromCache` loads a key from its seed, its public key and these
+bytes without building any tree, after checking that they match the public key.
 
 ### Signing is a randomizer search
 
@@ -156,21 +164,24 @@ and cannot be disabled.
 
 Safe for concurrent use.
 
-| Function                                                                     | Description                                                                                |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `NewKeyFromSeed(seed [32]byte) *PrivateKey`                                  | Returns the private key of a seed. Builds the top tree.                                    |
-| `(*PrivateKey).PublicKey() PublicKey`                                        | Returns the public key.                                                                    |
-| `(*PrivateKey).Sign(leafIndex uint32, message [32]byte) (*Signature, error)` | Signs a message at a leaf index. Never sign two different messages at the same leaf index. |
-| `(*PrivateKey).Prepare(leafIndex uint32) error`                              | Builds the bottom tree of a leaf index ahead of time.                                      |
+| Function                                                                                 | Description                                                                                                                             |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `NewKeyFromSeed(seed [32]byte) *PrivateKey`                                              | Returns the private key of a seed. Builds the top tree.                                                                                 |
+| `NewKeyFromCache(seed [32]byte, publicKey PublicKey, cache []byte) (*PrivateKey, error)` | Loads the private key of a seed from its tree cache, without building a tree. Returns an error unless the cache matches the public key. |
+| `(*PrivateKey).CacheBytes() []byte`                                                      | Encodes the tree cache: the stored nodes of the top tree and of the cached bottom trees.                                                |
+| `(*PrivateKey).PublicKey() PublicKey`                                                    | Returns the public key.                                                                                                                 |
+| `(*PrivateKey).Sign(leafIndex uint32, message [32]byte) (*Signature, error)`             | Signs a message at a leaf index. Never sign two different messages at the same leaf index.                                              |
+| `(*PrivateKey).Prepare(leafIndex uint32) error`                                          | Builds the bottom tree of a leaf index ahead of time.                                                                                   |
 
 ### `PublicKey`
 
 Comparable with `==`.
 
-| Function                                          | Description                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------- |
-| `PublicKeyFromBytes(b []byte) (PublicKey, error)` | Decodes a public key. Returns an error unless `b` is 32 bytes long. |
-| `(PublicKey).Bytes() []byte`                      | Encodes a public key on 32 bytes.                                   |
+| Function                                          | Description                                                            |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| `PublicKeyFromBytes(b []byte) (PublicKey, error)` | Decodes a public key. Returns an error unless `b` is 32 bytes long.    |
+| `(PublicKey).Bytes() []byte`                      | Encodes a public key on 32 bytes.                                      |
+| `PublicParamFromSeed(seed [32]byte) [16]byte`     | Returns the last 16 bytes of the public key of a seed, for two hashes. |
 
 ### `Signature`
 

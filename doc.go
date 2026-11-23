@@ -24,9 +24,15 @@
 //
 // [NewKeyFromSeed] builds the whole top tree, about 14 million Keccak-256
 // permutations. The first signature in a bottom tree builds that tree, at the same
-// cost. Both are spread over all CPUs. A [PrivateKey] caches the 8 bottom trees
+// cost. Both are spread over all CPUs. A [PrivateKey] caches the 4 bottom trees
 // it used last; [PrivateKey.Prepare] builds one
 // ahead of time. Verification costs 186 permutations.
+//
+// A key stores the 256 nodes of one level of each tree, 4 KiB, and recomputes the
+// 256 leaves under one of them for each authentication path. These nodes hold no
+// secret: [PrivateKey.CacheBytes] encodes them and [NewKeyFromCache] loads a key
+// from them without building any tree. Both follow the reference implementation
+// at commit c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764, and read its caches.
 //
 // Signing is mostly the search for a randomizer, about a million permutations.
 // On arm64 CPUs with the Armv8.2 SHA3 instructions, it permutes two Keccak states

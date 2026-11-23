@@ -363,7 +363,7 @@ func TestInvalidLengths(t *testing.T) {
 // used last, and that a signature from a rebuilt tree is the same.
 func TestBottomTreeCache(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds 10 bottom trees")
+		t.Skip("builds 6 bottom trees")
 	}
 
 	sk := sharedKey()
@@ -444,9 +444,9 @@ func TestConcurrentSigning(t *testing.T) {
 // TestPathOutsideTree checks that asking a tree for the path of a leaf it does not
 // hold returns an error instead of panicking.
 func TestPathOutsideTree(t *testing.T) {
-	tree := &layerTree{first: 1 << layerHeight}
+	tree := &layerTree{index: 1}
 	for _, leaf := range []uint32{0, 1<<layerHeight - 1, 2 << layerHeight} {
-		if _, err := tree.path(leaf); !errors.Is(err, errLeafOutside) {
+		if _, err := tree.path(&publicParam{}, &schemeSeed{}, leaf); !errors.Is(err, errLeafOutside) {
 			t.Errorf("path of leaf %d: %v", leaf, err)
 		}
 	}
