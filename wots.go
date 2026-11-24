@@ -250,26 +250,29 @@ func (s *trialSearch) firstTrial2(from, to uint64) uint64 {
 	return notFound
 }
 
-// firstTrial4 is firstTrial, trying four trials per permutation call.
+// firstTrial4 is firstTrial, trying four trials per permutation call. The state
+// is filled once, and each call only writes the randomizers: the template's
+// randomizer lanes are zero, and the permutation leaves its input unchanged.
 func (s *trialSearch) firstTrial4(from, to uint64) uint64 {
 	var st [100]uint64
-	at := s.at
-	for c := from; c < to; c += 4 {
-		for i, lane := range s.state {
-			st[4*i], st[4*i+1], st[4*i+2], st[4*i+3] = lane, lane, lane, lane
-		}
+	var out [8]uint64
+	for i, lane := range s.state {
+		st[4*i], st[4*i+1], st[4*i+2], st[4*i+3] = lane, lane, lane, lane
+	}
 
+	at := 4 * s.at
+	for c := from; c < to; c += 4 {
 		for j := range 4 {
 			lo, carry := bits.Add64(s.base.lo, c+uint64(j), 0)
-			st[4*at+j] ^= lo
-			st[4*at+4+j] ^= s.base.hi + carry
+			st[at+j] = lo
+			st[at+4+j] = s.base.hi + carry
 		}
 
-		keccakF1600x4(&st)
+		keccakF1600x4Head(&st, &out)
 
 		// The digests' first 16 bytes are lanes 0 and 1, little endian.
 		for j := range uint64(4) {
-			if isCodeword(st[j], st[4+j]) {
+			if isCodeword(out[j], out[4+j]) {
 				return c + j
 			}
 		}

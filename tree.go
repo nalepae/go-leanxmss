@@ -55,7 +55,7 @@ func newLayerTree(pp *publicParam, layer int, index uint32, stored []digest) *la
 }
 
 // wotsPublicLeaves returns the count leaves of layer from leaf first on, computed
-// on all CPUs.
+// on all CPUs. With AVX2, each goroutine computes its leaves four at a time.
 func wotsPublicLeaves(pp *publicParam, seed *schemeSeed, layer int, first uint32, count int) []digest {
 	leaves := make([]digest, count)
 	workers := min(runtime.GOMAXPROCS(0), count)
@@ -64,6 +64,13 @@ func wotsPublicLeaves(pp *publicParam, seed *schemeSeed, layer int, first uint32
 	for i := range workers {
 		from, to := i*count/workers, (i+1)*count/workers
 		wg.Go(func() {
+			if useAVX2 {
+				var b leafBatch
+				for ; to-from >= 4; from += 4 {
+					b.leaves(pp, seed, layer, first+uint32(from), leaves[from:from+4])
+				}
+			}
+
 			k := newHasher()
 			for j := from; j < to; j++ {
 				leaves[j] = k.wotsPublicLeaf(pp, seed, layer, first+uint32(j))

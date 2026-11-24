@@ -80,11 +80,11 @@ valid at another leaf index: false
 ## Disabling the SHA3 or AVX2 instructions
 
 Signing permutes Keccak states in assembly: two at a time with the Armv8.2 SHA3
-instructions on arm64, four at a time with AVX2 on amd64. These instructions
-change only the speed: keys and signatures are the same byte for byte. To use the
-pure Go permutations instead in a program such as the example at the top of this
-page, built with `go build -o example .`, either set `GODEBUG` when running it,
-with no rebuild:
+instructions on arm64, four at a time with AVX2 on amd64. With AVX2, building a
+tree also hashes four leaves at a time. These instructions change only the speed:
+keys and signatures are the same byte for byte. To use the pure Go permutations
+instead in a program such as the example at the top of this page, built with
+`go build -o example .`, either set `GODEBUG` when running it, with no rebuild:
 
 ```sh
 GODEBUG=cpu.sha3=off ./example # arm64
@@ -175,36 +175,40 @@ the same leaf index again is safe and gives the same signature.
 
 ## Performance
 
-On an Apple M2 Max (12 cores), mean of 5 runs of `go test -run '^$' -bench . -count 5
--cpu 1,12`:
+On an Apple M2 Max (12 cores) and on an AMD EPYC-Rome virtual machine (10 cores,
+AVX2, no AVX-512), with `go test -run '^$' -bench . -count 5 -cpu 1,12` on the M2
+Max and `-count 3 -cpu 1,10` on the EPYC. "All CPUs" is 12 on the M2 Max and 10 on
+the EPYC:
 
-| Operation                              | 12 CPUs | 1 CPU   |
-| -------------------------------------- | ------- | ------- |
-| `NewKeyFromSeed` (builds the top tree) | 580 ms  | 5.17 s  |
-| `Prepare` (builds a bottom tree)       | 626 ms  | 5.28 s  |
-| `Verify`                               | 71.8 µs | 70.3 µs |
+| Operation                              | Machine | All CPUs | 1 CPU   |
+| -------------------------------------- | ------- | -------- | ------- |
+| `NewKeyFromSeed` (builds the top tree) | M2 Max  | 580 ms   | 5.17 s  |
+| `NewKeyFromSeed` (builds the top tree) | EPYC    | 519 ms   | 2.89 s  |
+| `Prepare` (builds a bottom tree)       | M2 Max  | 626 ms   | 5.28 s  |
+| `Prepare` (builds a bottom tree)       | EPYC    | 546 ms   | 3.03 s  |
+| `Verify`                               | M2 Max  | 71.8 µs  | 70.3 µs |
 
-Signing, on the Apple M2 Max (12 cores) and on an AMD EPYC-Rome virtual machine
-(10 cores, AVX2, no AVX-512), with the permutations in assembly (SHA3 on the M2
-Max, AVX2 on the EPYC) and in pure Go (`GODEBUG=cpu.sha3=off` or
-`GODEBUG=cpu.avx2=off`). "All CPUs" is 12 on the M2 Max and 10 on the EPYC:
+Signing, with the permutations in assembly (SHA3 on the M2 Max, AVX2 on the EPYC)
+and in pure Go (`GODEBUG=cpu.sha3=off` or `GODEBUG=cpu.avx2=off`):
 
-| `Sign`                      | Machine | Permutation | All CPUs | 1 CPU   |
-| --------------------------- | ------- | ----------- | -------- | ------- |
-| Bottom tree cached          | M2 Max  | SHA3        | 8.8 ms   | 76.6 ms |
-| Bottom tree cached          | M2 Max  | Pure Go     | 35.2 ms  | 310 ms  |
-| Bottom tree cached          | EPYC    | AVX2        | 30.8 ms  | 216 ms  |
-| Bottom tree cached          | EPYC    | Pure Go     | 144 ms   | 870 ms  |
-| Bottom tree not cached yet  | M2 Max  | SHA3        | 680 ms   | 5.44 s  |
-| Bottom tree not cached yet  | M2 Max  | Pure Go     | 760 ms   | 5.75 s  |
+| `Sign`                     | Machine | Permutation | All CPUs | 1 CPU   |
+| -------------------------- | ------- | ----------- | -------- | ------- |
+| Bottom tree cached         | M2 Max  | SHA3        | 8.8 ms   | 76.6 ms |
+| Bottom tree cached         | M2 Max  | Pure Go     | 35.2 ms  | 310 ms  |
+| Bottom tree cached         | EPYC    | AVX2        | 30.1 ms  | 179 ms  |
+| Bottom tree cached         | EPYC    | Pure Go     | 144 ms   | 870 ms  |
+| Bottom tree not cached yet | M2 Max  | SHA3        | 680 ms   | 5.44 s  |
+| Bottom tree not cached yet | M2 Max  | Pure Go     | 760 ms   | 5.75 s  |
+| Bottom tree not cached yet | EPYC    | AVX2        | 608 ms   | 3.44 s  |
 
-The M2 Max figures are the mean of 5 runs, the EPYC ones of 3. The permutation in
-assembly only speeds up the randomizer search: building a bottom tree costs about
-the same either way. Signing in a cached tree comes from `-bench SignCachedTree
--benchtime 40x`, which signs at the same 40 leaf indices in every run, as the
-number of randomizer trials depends on the leaf index. With `-cpu 1`, the first
-run of `Prepare` and of `Sign` in a new tree runs at the speed of all CPUs, a
-quirk of the benchmark harness: those two cells are the mean of the other 4 runs.
+The figures are the mean of the runs. The SHA3 instructions only speed up the
+randomizer search: on the M2 Max, building a bottom tree costs about the same
+either way. AVX2 also speeds up building trees, which hashes four leaves at a time.
+Signing in a cached tree comes from `-bench SignCachedTree -benchtime 40x`, which
+signs at the same 40 leaf indices in every run, as the number of randomizer trials
+depends on the leaf index. With `-cpu 1`, the first run of `Prepare` and of `Sign`
+in a new tree runs at the speed of all CPUs, a quirk of the benchmark harness:
+those cells leave out the first run.
 
 ## Tests and benchmarks
 

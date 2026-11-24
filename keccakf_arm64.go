@@ -31,3 +31,10 @@ func keccakF1600x2(s *[50]uint64) {
 func keccakF1600x4(s *[100]uint64) {
 	keccakF1600x4Generic(s)
 }
+
+// keccakF1600x4Head writes to out lanes 0 and 1 of Keccak-f[1600] of four
+// interleaved states, s[4i+j] lane i of state j, leaving s unchanged: out[j] and
+// out[4+j] are lanes 0 and 1 of state j.
+func keccakF1600x4Head(s *[100]uint64, out *[8]uint64) {
+	keccakF1600x4HeadGeneric(s, out)
+}

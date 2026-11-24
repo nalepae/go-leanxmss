@@ -137,3 +137,10 @@ func keccakF1600x4Generic(s *[100]uint64) {
 		}
 	}
 }
+
+// keccakF1600x4HeadGeneric is keccakF1600x4Head, by four scalar permutations.
+func keccakF1600x4HeadGeneric(s *[100]uint64, out *[8]uint64) {
+	permuted := *s
+	keccakF1600x4Generic(&permuted)
+	copy(out[:], permuted[:8])
+}

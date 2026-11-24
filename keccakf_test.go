@@ -148,3 +148,83 @@ func TestLeastTrialBackends(t *testing.T) {
 		}
 	}
 }
+
+// TestKeccakF1600x4Head checks the head permutation, on every backend this CPU can
+// run, against the full four-state one: same lanes 0 and 1, input unchanged.
+func TestKeccakF1600x4Head(t *testing.T) {
+	x := uint64(0x0f1e2d3c4b5a6978)
+	var s [100]uint64
+	for i := range s {
+		x = x*6364136223846793005 + 1442695040888963407
+		s[i] = x
+	}
+
+	input := s
+	full := s
+	keccakF1600x4Generic(&full)
+
+	var out, generic [8]uint64
+	keccakF1600x4Head(&s, &out)
+	keccakF1600x4HeadGeneric(&s, &generic)
+	if s != input {
+		t.Error("the input changed")
+	}
+
+	for i := range out {
+		if out[i] != full[i] {
+			t.Errorf("word %d: %x, want %x", i, out[i], full[i])
+		}
+
+		if generic[i] != full[i] {
+			t.Errorf("generic word %d: %x, want %x", i, generic[i], full[i])
+		}
+	}
+}
+
+// TestLeafBatch checks four leaves computed together against leaves computed one by
+// one, on both layers, from a leaf index that is not a multiple of 4.
+func TestLeafBatch(t *testing.T) {
+	var pp publicParam
+	var seed schemeSeed
+	for i := range pp {
+		pp[i] = byte(3 * i)
+	}
+
+	for i := range seed {
+		seed[i] = byte(7*i + 1)
+	}
+
+	k := newHasher()
+	var b leafBatch
+	for layer := range 2 {
+		const e = 4097
+		got := make([]digest, 4)
+		b.leaves(&pp, &seed, layer, e, got)
+		for j := range uint32(4) {
+			if want := k.wotsPublicLeaf(&pp, &seed, layer, e+j); got[j] != want {
+				t.Errorf("layer %d, leaf %d: %x, want %x", layer, e+j, got[j], want)
+			}
+		}
+	}
+}
+
+// TestWotsPublicLeavesBackends checks that the leaves of a tree are the same with
+// AVX2 and without it, for a count that leaves some goroutines a remainder.
+func TestWotsPublicLeavesBackends(t *testing.T) {
+	var pp publicParam
+	var seed schemeSeed
+	pp[0], seed[0] = 1, 2
+
+	saved := useAVX2
+	defer func() { useAVX2 = saved }()
+
+	useAVX2 = saved
+	accelerated := wotsPublicLeaves(&pp, &seed, 0, 1000, 37)
+	useAVX2 = false
+	scalar := wotsPublicLeaves(&pp, &seed, 0, 1000, 37)
+	for i := range scalar {
+		if accelerated[i] != scalar[i] {
+			t.Errorf("leaf %d: %x with AVX2 %v, %x without", 1000+i, accelerated[i], saved, scalar[i])
+		}
+	}
+}
