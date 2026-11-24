@@ -152,7 +152,8 @@ var (
 	_ = [1]int{}[(publicParamLen+addressLen+messageSize+randomizerLen)/keccakRate]
 	_ = [1]int{}[(publicParamLen+addressLen+messageSize)%8]
 	_ = [1]int{}[(publicParamLen+addressLen+n)%8]
-	_ = [1]int{}[trialChunk%2] // trials come in pairs
+	_ = [1]int{}[trialChunk%4]          // trials come in pairs, or in fours with AVX2
+	_ = [1]int{}[maxRandomizerTrials%4] // so do the chunks' ends
 )
 
 func newTrialSearch(pp *publicParam, layer int, e uint32, message []byte, base u128) *trialSearch {
@@ -210,8 +211,17 @@ func (s *trialSearch) work() {
 }
 
 // firstTrial returns the least c in [from, to) whose randomizer base + c makes the
-// digest a codeword, or notFound. It tries two at once; from and to are even.
+// digest a codeword, or notFound. from and to are multiples of 4.
 func (s *trialSearch) firstTrial(from, to uint64) uint64 {
+	if useAVX2 {
+		return s.firstTrial4(from, to)
+	}
+
+	return s.firstTrial2(from, to)
+}
+
+// firstTrial2 is firstTrial, trying two trials per permutation call.
+func (s *trialSearch) firstTrial2(from, to uint64) uint64 {
 	var st [50]uint64
 	at := s.at
 	for c := from; c < to; c += 2 {
@@ -234,6 +244,34 @@ func (s *trialSearch) firstTrial(from, to uint64) uint64 {
 
 		if isCodeword(st[1], st[3]) {
 			return c + 1
+		}
+	}
+
+	return notFound
+}
+
+// firstTrial4 is firstTrial, trying four trials per permutation call.
+func (s *trialSearch) firstTrial4(from, to uint64) uint64 {
+	var st [100]uint64
+	at := s.at
+	for c := from; c < to; c += 4 {
+		for i, lane := range s.state {
+			st[4*i], st[4*i+1], st[4*i+2], st[4*i+3] = lane, lane, lane, lane
+		}
+
+		for j := range 4 {
+			lo, carry := bits.Add64(s.base.lo, c+uint64(j), 0)
+			st[4*at+j] ^= lo
+			st[4*at+4+j] ^= s.base.hi + carry
+		}
+
+		keccakF1600x4(&st)
+
+		// The digests' first 16 bytes are lanes 0 and 1, little endian.
+		for j := range uint64(4) {
+			if isCodeword(st[j], st[4+j]) {
+				return c + j
+			}
 		}
 	}
 

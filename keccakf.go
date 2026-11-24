@@ -116,3 +116,24 @@ func keccakF1600x2Generic(s *[50]uint64) {
 		s[2*i], s[2*i+1] = a[i], b[i]
 	}
 }
+
+// keccakF1600x4Generic is Keccak-f[1600] of four interleaved states, as
+// keccakF1600x4, by four scalar permutations.
+func keccakF1600x4Generic(s *[100]uint64) {
+	var states [4][25]uint64
+	for i := range 25 {
+		for j := range states {
+			states[j][i] = s[4*i+j]
+		}
+	}
+
+	for j := range states {
+		keccakF1600(&states[j])
+	}
+
+	for i := range 25 {
+		for j := range states {
+			s[4*i+j] = states[j][i]
+		}
+	}
+}

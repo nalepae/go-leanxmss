@@ -77,67 +77,18 @@ valid: true
 valid at another leaf index: false
 ```
 
-## How it works
+## Disabling the SHA3 or AVX2 instructions
 
-leanXMSS is two layers of Merkle trees of height 16 over one-time signature keys.
-Each of the top tree's 65,536 leaves signs the root of one bottom tree, and each
-bottom tree's 65,536 leaves sign messages, so a key has 2^32 leaf indices.
-
-`NewKeyFromSeed` builds the top tree. Signing at a leaf index needs the bottom
-tree that index is in: a `PrivateKey` caches the 8 bottom trees it used last, so
-signing at consecutive leaf indices builds a tree only once every 65,536
-signatures, and `Prepare` builds the next one ahead of time. Key generation, tree
-building and signing use all CPUs.
-
-### Signing is a randomizer search
-
-A one-time signature only accepts a message digest that is a codeword: a digest
-whose last 6 base-4 digits are zero and whose other 58 sum to 106. So the signer
-hashes the message with one randomizer after another until the digest is one:
-about a million trials on average, a number that depends on the message and the
-leaf index. This search is nearly all the time of signing once the bottom tree is
-built. Signing in a new bottom tree also builds that tree, and runs a second
-search, to sign its root with the top tree's leaf.
-
-### One permutation per trial
-
-A trial's hash input, the public parameter, the address, the message and the
-randomizer, is a single Keccak-256 block, in which only the randomizer changes.
-The search pads that block once, into a Keccak state whose randomizer lanes are
-zero. A trial copies that state, XORs its randomizer into two lanes, runs one
-Keccak-f[1600] permutation and reads the digest from the first two lanes, with no
-hashing API, buffering or byte encoding in between.
-
-### Parallel search
-
-The search hands out chunks of 4,096 consecutive trials, in increasing order,
-from a shared counter. Each goroutine takes the next chunk as soon as it has
-scanned one. Faster cores scan more chunks, and no goroutine waits for the
-others. A goroutine stops once its chunk starts at or above the least codeword
-found so far. Every chunk below that one is scanned. The search finds the
-least codeword whatever the scheduling, and signing stays deterministic.
-
-### The SHA3 instructions
-
-The search tries two randomizers per call, by permuting two Keccak states
-together. On arm64, the vector unit (NEON) has 128-bit registers, each able to
-hold two of Keccak's 64-bit lanes. The optional Armv8.2 SHA3 extension adds four
-vector instructions that do Keccak's steps in fewer instructions: `EOR3` (XOR of
-three values), `RAX1` (XOR with a value rotated by one), `XAR` (XOR then rotate)
-and `BCAX` (AND-NOT then XOR). [`keccakf_arm64.s`](keccakf_arm64.s), adapted from
-Go's standard library, loads lane i of both states into register i, so one pass
-of these instructions permutes both. It is in assembly because the Go compiler
-never emits these instructions.
-
-### Disabling the SHA3 instructions
-
-The SHA3 instructions change only the speed: keys and signatures are the same
-byte for byte. To use the pure Go permutations instead in a program such as the
-example at the top of this page, built with `go build -o example .`, either set
-`GODEBUG` when running it, with no rebuild:
+Signing permutes Keccak states in assembly: two at a time with the Armv8.2 SHA3
+instructions on arm64, four at a time with AVX2 on amd64. These instructions
+change only the speed: keys and signatures are the same byte for byte. To use the
+pure Go permutations instead in a program such as the example at the top of this
+page, built with `go build -o example .`, either set `GODEBUG` when running it,
+with no rebuild:
 
 ```sh
-GODEBUG=cpu.sha3=off ./example
+GODEBUG=cpu.sha3=off ./example # arm64
+GODEBUG=cpu.avx2=off ./example # amd64
 ```
 
 or build it without the assembly:
@@ -147,8 +98,7 @@ go build -tags purego -o example .
 ./example
 ```
 
-Either way, signing is slower. The rest of the search does not depend on the CPU,
-and cannot be disabled.
+Either way, signing is slower.
 
 ## API
 
@@ -234,18 +184,27 @@ On an Apple M2 Max (12 cores), mean of 5 runs of `go test -run '^$' -bench . -co
 | `Prepare` (builds a bottom tree)       | 626 ms  | 5.28 s  |
 | `Verify`                               | 71.8 µs | 70.3 µs |
 
-Signing, with the SHA3 instructions and without them (`GODEBUG=cpu.sha3=off`):
+Signing, on the Apple M2 Max (12 cores) and on an AMD EPYC-Rome virtual machine
+(10 cores, AVX2, no AVX-512), with the permutations in assembly (SHA3 on the M2
+Max, AVX2 on the EPYC) and in pure Go (`GODEBUG=cpu.sha3=off` or
+`GODEBUG=cpu.avx2=off`). "All CPUs" is 12 on the M2 Max and 10 on the EPYC:
 
-| Operation                                      | 12 CPUs, SHA3 | 12 CPUs, no SHA3 | 1 CPU, SHA3 | 1 CPU, no SHA3 |
-| ---------------------------------------------- | ------------- | ---------------- | ----------- | -------------- |
-| `Sign`, bottom tree cached                     | 8.8 ms        | 35.2 ms          | 76.6 ms     | 310 ms         |
-| `Sign`, bottom tree not cached yet (builds it) | 680 ms        | 760 ms           | 5.44 s      | 5.75 s         |
+| `Sign`                      | Machine | Permutation | All CPUs | 1 CPU   |
+| --------------------------- | ------- | ----------- | -------- | ------- |
+| Bottom tree cached          | M2 Max  | SHA3        | 8.8 ms   | 76.6 ms |
+| Bottom tree cached          | M2 Max  | Pure Go     | 35.2 ms  | 310 ms  |
+| Bottom tree cached          | EPYC    | AVX2        | 30.8 ms  | 216 ms  |
+| Bottom tree cached          | EPYC    | Pure Go     | 144 ms   | 870 ms  |
+| Bottom tree not cached yet  | M2 Max  | SHA3        | 680 ms   | 5.44 s  |
+| Bottom tree not cached yet  | M2 Max  | Pure Go     | 760 ms   | 5.75 s  |
 
-Signing in a cached tree comes from `-bench SignCachedTree -benchtime 40x`, which
-signs at the same 40 leaf indices in every run, as the number of randomizer
-trials depends on the leaf index. With `-cpu 1`, the first run of `Prepare` and
-of `Sign` in a new tree runs at the speed of all CPUs, a quirk of the benchmark
-harness: those two cells are the mean of the other 4 runs.
+The M2 Max figures are the mean of 5 runs, the EPYC ones of 3. The permutation in
+assembly only speeds up the randomizer search: building a bottom tree costs about
+the same either way. Signing in a cached tree comes from `-bench SignCachedTree
+-benchtime 40x`, which signs at the same 40 leaf indices in every run, as the
+number of randomizer trials depends on the leaf index. With `-cpu 1`, the first
+run of `Prepare` and of `Sign` in a new tree runs at the speed of all CPUs, a
+quirk of the benchmark harness: those two cells are the mean of the other 4 runs.
 
 ## Tests and benchmarks
 
@@ -263,7 +222,7 @@ go test -short
 ```
 
 Run them with the pure Go permutations only, which every architecture but arm64
-uses:
+and amd64 uses:
 
 ```sh
 go test -tags purego

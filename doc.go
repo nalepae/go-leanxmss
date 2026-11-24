@@ -43,5 +43,6 @@
 //
 // Signing is mostly the search for a randomizer, about a million permutations.
 // On arm64 CPUs with the Armv8.2 SHA3 instructions, it permutes two Keccak states
-// at once with them, unless built with the purego tag.
+// at once with them, and on amd64 CPUs with AVX2, four, unless built with the
+// purego tag.
 package leanxmss
